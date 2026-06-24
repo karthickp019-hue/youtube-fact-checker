@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: youtube-fact-checker
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
