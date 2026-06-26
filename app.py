@@ -46,6 +46,7 @@ body { font-family: -apple-system, sans-serif; background: #0f0f0f; color: #fff;
 .error-box { background: #2a1a1a; border: 1px solid #ff6b6b; border-radius: 12px; padding: 16px; color: #ff6b6b; margin-bottom: 20px; display: none; }
 .tip { background: #1a1a2e; border: 1px solid #333; border-radius: 10px; padding: 12px 16px; font-size: 13px; color: #aaa; margin-bottom: 20px; }
 .tip span { color: #6c63ff; }
+.video-type { display: inline-block; background: #2a2a3a; color: #6c63ff; border-radius: 6px; padding: 2px 8px; font-size: 11px; margin-left: 8px; }
 </style>
 </head>
 <body>
@@ -54,10 +55,10 @@ body { font-family: -apple-system, sans-serif; background: #0f0f0f; color: #fff;
   <p>Paste any YouTube link to check its facts</p>
 </div>
 <div class="container">
-  <div class="tip"><span>ðŸ’¡ Tip:</span> Works best with news videos longer than 3 minutes. Supports Hindi and English videos!</div>
+  <div class="tip"><span>ðŸ’¡ Tip:</span> Works with both Shorts and regular videos. Supports Hindi and English!</div>
   <div class="input-box">
     <label>YouTube Video URL</label>
-    <input type="text" id="urlInput" placeholder="https://www.youtube.com/watch?v=..." />
+    <input type="text" id="urlInput" placeholder="https://www.youtube.com/watch?v=... or Shorts link" />
     <button class="btn" id="checkBtn" onclick="checkFacts()">ðŸ” Check Facts</button>
   </div>
   <div class="error-box" id="errorBox"></div>
@@ -111,10 +112,11 @@ function showResults(data) {
   const list = document.getElementById('claimsList');
   results.style.display = 'block';
   if (!data.claims || !data.claims.length) {
-    list.innerHTML = '<div class="no-claims"><div style="font-size:40px">ðŸ”Ž</div><p>No specific factual claims found.</p><p style="margin-top:8px;font-size:12px">Try a longer news video.</p></div>';
+    list.innerHTML = '<div class="no-claims"><div style="font-size:40px">ðŸ”Ž</div><p>No specific factual claims found in this video.</p><p style="margin-top:8px;font-size:12px">This video may be opinion-based or have very little content. Try a news video.</p></div>';
     return;
   }
-  document.getElementById('resultsTitle').textContent = `Found ${data.claims.length} claim(s) â€” Fact-Check Report`;
+  const typeLabel = data.is_short ? '<span class="video-type">YouTube Short</span>' : '<span class="video-type">Regular Video</span>';
+  document.getElementById('resultsTitle').innerHTML = `Found ${data.claims.length} claim(s) ${typeLabel}`;
   const emojis = {Supported:'âœ…',Disputed:'âŒ',Mixed:'âš ï¸',Unverifiable:'â“'};
   list.innerHTML = data.claims.map((c,i) => `
     <div class="claim-card">
@@ -142,7 +144,6 @@ def vid_id(url):
     raise ValueError("Invalid YouTube URL")
 
 def get_content_youtube_api(vid):
-    """Use YouTube Data API to get video title and description"""
     if not YOUTUBE_KEY:
         return None
     try:
@@ -151,74 +152,84 @@ def get_content_youtube_api(vid):
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read())
         items = data.get("items", [])
-        if not items:
-            return None
+        if not items: return None
         snippet = items[0]["snippet"]
         title = snippet.get("title", "")
         desc = snippet.get("description", "")[:3000]
-        return f"VIDEO TITLE: {title}\n\nDESCRIPTION: {desc}"
+        tags = ", ".join(snippet.get("tags", [])[:20])
+        return f"VIDEO TITLE: {title}\n\nDESCRIPTION: {desc}\n\nTAGS: {tags}"
     except Exception as e:
         print(f"YouTube API error: {e}")
         return None
 
 def get_transcript(vid):
-    """Try to get transcript using youtube-transcript-api"""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
         try:
             ytt = YouTubeTranscriptApi()
             fetched = ytt.fetch(vid)
-            return " ".join(s.text for s in fetched)
+            text = " ".join(s.text for s in fetched)
+            if text.strip(): return text
         except: pass
         try:
             segs = YouTubeTranscriptApi.get_transcript(vid)
-            return " ".join(s["text"] for s in segs)
+            text = " ".join(s["text"] for s in segs)
+            if text.strip(): return text
         except: pass
         try:
             tlist = YouTubeTranscriptApi.list_transcripts(vid)
             for t in tlist:
                 try:
                     segs = t.fetch()
-                    try: return " ".join(s.text for s in segs)
-                    except: return " ".join(s["text"] for s in segs)
+                    try: text = " ".join(s.text for s in segs)
+                    except: text = " ".join(s["text"] for s in segs)
+                    if text.strip(): return text
                 except: pass
         except: pass
     except: pass
     return None
 
-def get_content(vid):
-    # Try transcript first
-    text = get_transcript(vid)
-    if text and len(text) > 100:
-        return text
-    # Fall back to YouTube API
-    text = get_content_youtube_api(vid)
-    if text:
-        return text
-    # Last resort: scrape page
+def scrape_youtube_page(vid):
     try:
         req = urllib.request.Request(
             f"https://www.youtube.com/watch?v={vid}",
-            headers={"User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36"}
+            headers={"User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"}
         )
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=20) as r:
             html = r.read().decode("utf-8", "ignore")
         title = ""
-        m = re.search(r'"title":"([^"]+)"', html)
+        m = re.search(r'"title":"([^"]{3,200})"', html)
         if m: title = m.group(1)
         desc = ""
-        m = re.search(r'"shortDescription":"(.*?)"(?:,"isCrawlable")', html, re.DOTALL)
-        if m: desc = m.group(1)[:2000].replace("\\n", " ").replace('\\"', '"')
+        for pat in [r'"shortDescription":"(.*?)"(?:,"isCrawlable")', r'"description":{"simpleText":"(.*?)"}']:
+            m = re.search(pat, html, re.DOTALL)
+            if m:
+                desc = m.group(1)[:3000].replace("\\n", " ").replace('\\"', '"')
+                break
+        tags = ""
+        m = re.search(r'"keywords":\[(.*?)\]', html)
+        if m: tags = m.group(1)[:500]
         if title or desc:
-            return f"VIDEO TITLE: {title}\n\nDESCRIPTION: {desc}"
+            return f"VIDEO TITLE: {title}\n\nDESCRIPTION: {desc}\n\nTAGS: {tags}"
     except: pass
     return None
+
+def get_content(vid):
+    # 1. Try transcript (best quality)
+    text = get_transcript(vid)
+    if text and len(text) > 100:
+        return text
+    # 2. Try YouTube Data API
+    text = get_content_youtube_api(vid)
+    if text: return text
+    # 3. Scrape YouTube page
+    return scrape_youtube_page(vid)
 
 def groq_call(prompt, sys_msg="You are a helpful assistant."):
     body = json.dumps({
         "model": MODEL,
         "messages": [{"role": "system", "content": sys_msg}, {"role": "user", "content": prompt}],
-        "max_tokens": 800, "temperature": 0.1
+        "max_tokens": 1000, "temperature": 0.1
     }).encode()
     req = urllib.request.Request(
         "https://api.groq.com/openai/v1/chat/completions",
@@ -227,25 +238,41 @@ def groq_call(prompt, sys_msg="You are a helpful assistant."):
             "Authorization": "Bearer " + GROQ_KEY,
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
-            "Accept": "application/json"
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9"
         }
     )
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())["choices"][0]["message"]["content"].strip()
 
 def search_web(query):
-    q = urllib.parse.urlencode({"q": query, "format": "json", "no_html": "1"})
-    req = urllib.request.Request("https://api.duckduckgo.com/?" + q, headers={"User-Agent": "Mozilla/5.0"})
+    results = []
+    # Method 1: DuckDuckGo instant answer
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
+        q = urllib.parse.urlencode({"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"})
+        req = urllib.request.Request("https://api.duckduckgo.com/?" + q, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
             data = json.loads(r.read())
-        results = []
-        if data.get("AbstractText"): results.append(data["AbstractText"])
-        for t in data.get("RelatedTopics", [])[:4]:
+        if data.get("AbstractText"):
+            results.append("SOURCE: " + data.get("AbstractSource", "Web") + "\n" + data["AbstractText"])
+        for t in data.get("RelatedTopics", [])[:3]:
             if isinstance(t, dict) and t.get("Text"): results.append(t["Text"])
-        return "\n".join(results) if results else "No results found."
-    except Exception as e:
-        return f"Search error: {e}"
+    except: pass
+    # Method 2: DuckDuckGo HTML scrape
+    try:
+        q = urllib.parse.urlencode({"q": query, "kl": "in-en"})
+        req = urllib.request.Request(
+            "https://html.duckduckgo.com/html/?" + q,
+            headers={"User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            html = r.read().decode("utf-8", "ignore")
+        snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
+        for s in snippets[:4]:
+            clean = re.sub(r'<[^>]+>', "", s).strip()
+            if clean and len(clean) > 30: results.append(clean)
+    except: pass
+    return "\n\n".join(results) if results else "No web results found."
 
 @app.route("/")
 def index():
@@ -257,6 +284,8 @@ def check():
         return jsonify({"error": "GROQ_API_KEY not configured on server."})
     data = request.get_json()
     url = data.get("url", "").strip()
+    is_short = "shorts" in url.lower()
+
     try:
         vid = vid_id(url)
     except:
@@ -264,12 +293,14 @@ def check():
 
     content = get_content(vid)
     if not content:
-        return jsonify({"error": "Could not get content from this video. Try a different video."})
+        return jsonify({"error": "Could not get content from this video. Try a different one."})
 
+    # More aggressive claim extraction for Shorts
+    extra = "Even implied or indirect factual statements count. Extract any verifiable claim." if is_short else ""
     try:
         raw = groq_call(
-            f"Extract up to 5 specific checkable factual claims (numbers, quotes, events, statistics) from this content. Return ONLY a JSON array: [{{\"claim\":\"...\",\"context\":\"...\"}}]. If none found, return [].\n\nCONTENT:\n{content[:6000]}",
-            "You extract factual claims. Return only valid JSON arrays, no other text."
+            f"Extract up to 6 specific checkable factual claims from this content. {extra}\nInclude: numbers, statistics, named events, quotes, dates, policy claims, allegations.\nReturn ONLY a JSON array: [{{\"claim\":\"...\",\"context\":\"...\"}}]\nIf truly none, return [].\n\nCONTENT:\n{content[:7000]}",
+            "You extract factual claims for fact-checking. Be thorough. Return only valid JSON arrays, no other text."
         )
         raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
         try: claims = json.loads(raw)
@@ -280,12 +311,12 @@ def check():
         return jsonify({"error": f"AI error: {str(e)}"})
 
     results = []
-    for c in claims[:5]:
+    for c in claims[:6]:
         try:
             search_results = search_web(c["claim"])
             analysis = groq_call(
-                f'Claim: "{c["claim"]}"\nContext: "{c["context"]}"\n\nWeb info:\n{search_results}\n\nWrite 2-3 sentences on what sources say. End with: VERDICT: Supported / Disputed / Mixed / Unverifiable',
-                "You are a neutral fact-checker."
+                f'CLAIM: "{c["claim"]}"\nCONTEXT: "{c["context"]}"\n\nWEB RESEARCH:\n{search_results}\n\n1. Write 2-3 sentences on what sources say about this claim.\n2. Note any contradictions or supporting evidence.\n3. End with exactly: VERDICT: Supported / Disputed / Mixed / Unverifiable',
+                "You are a neutral fact-checker. Be fair regardless of political direction."
             )
             verdict = "Unverifiable"
             for line in analysis.splitlines():
@@ -295,12 +326,22 @@ def check():
                         verdict = v
                     break
             clean = re.sub(r"VERDICT:.*", "", analysis).strip()
-            results.append({"claim": c["claim"], "context": c.get("context",""), "verdict": verdict, "analysis": clean})
-            time.sleep(0.5)
+            results.append({
+                "claim": c["claim"],
+                "context": c.get("context", ""),
+                "verdict": verdict,
+                "analysis": clean
+            })
+            time.sleep(0.3)
         except Exception as e:
-            results.append({"claim": c["claim"], "context": c.get("context",""), "verdict": "Unverifiable", "analysis": str(e)})
+            results.append({
+                "claim": c["claim"],
+                "context": c.get("context", ""),
+                "verdict": "Unverifiable",
+                "analysis": str(e)
+            })
 
-    return jsonify({"claims": results})
+    return jsonify({"claims": results, "is_short": is_short})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
